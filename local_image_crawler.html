@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>로컬 이미지 크롤링 다운로더</title>
+    <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/file-saver@2.0.5/dist/FileSaver.min.js"></script>
+    <style>
+      :root {
+        --bg: #f4f7fb;
+        --card: #ffffff;
+        --text: #1b2533;
+        --sub: #5f6d80;
+        --accent: #0b5fff;
+        --line: #d8e1ef;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: linear-gradient(160deg, #f8fbff 0%, #edf2fa 100%);
+        color: var(--text);
+        font-family: "Noto Sans KR", -apple-system, sans-serif;
+      }
+      .wrap { max-width: 1180px; margin: 0 auto; padding: 24px; }
+      h1 { margin: 0 0 6px; }
+      .desc { margin: 0 0 14px; color: var(--sub); }
+      .bar { display: flex; gap: 10px; margin-bottom: 12px; }
+      .bar input, .bar button {
+        height: 42px; border-radius: 10px; border: 1px solid var(--line); font-size: 15px;
+      }
+      #query { flex: 1; padding: 0 12px; }
+      #count { width: 90px; padding: 0 10px; }
+      button { border: none; background: var(--accent); color: #fff; padding: 0 15px; cursor: pointer; font-weight: 700; }
+      button:disabled { opacity: .45; cursor: default; }
+      .actions { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
+      .status { min-height: 24px; color: var(--sub); margin-bottom: 8px; }
+      .pager { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+      .pager button { height: 34px; padding: 0 12px; border-radius: 8px; }
+      .pager span { color: var(--sub); font-size: 14px; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, .06);
+        cursor: pointer;
+        user-select: none;
+      }
+      .card.drag-hit { outline: 3px solid rgba(11, 95, 255, .7); outline-offset: -3px; }
+      .thumb-wrap { position: relative; }
+      .thumb-wrap img { width: 100%; height: 168px; object-fit: cover; display: block; }
+      .check { position: absolute; top: 8px; right: 8px; transform: scale(1.2); }
+      .meta { padding: 10px; }
+      .title { font-size: 13px; line-height: 1.35; height: 36px; overflow: hidden; }
+      .source { margin-top: 6px; display: inline-block; font-size: 12px; color: var(--sub); text-decoration: none; }
+      .selection-box {
+        position: fixed;
+        border: 1px dashed var(--accent);
+        background: rgba(11, 95, 255, .12);
+        pointer-events: none;
+        z-index: 9999;
+      }
+      .hint { color: var(--sub); font-size: 12px; margin-top: 6px; }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <h1>로컬 이미지 크롤링 다운로더</h1>
+      <p class="desc">DuckDuckGo 기반 검색 (로컬 API 서버 필요: http://localhost:3001)</p>
+      <form id="searchForm" class="bar">
+        <input id="query" type="text" placeholder="예: cat, landscape, architecture" required />
+        <input id="count" type="number" min="1" max="500" value="100" />
+        <button type="submit">검색</button>
+      </form>
+      <div class="actions">
+        <button id="downloadBtn" type="button" disabled>선택 이미지 ZIP 다운로드</button>
+        <span id="selectedCount">선택 0개</span>
+      </div>
+      <div id="status" class="status"></div>
+      <div class="pager">
+        <button id="prevPageBtn" type="button" disabled>이전</button>
+        <button id="nextPageBtn" type="button" disabled>다음</button>
+        <span id="pageInfo">페이지 0 / 0</span>
+      </div>
+      <section id="results" class="grid"></section>
+      <div class="hint">다음 페이지가 활성화되려면 로컬 서버가 DuckDuckGo nextStart를 반환해야 합니다.</div>
+    </main>
+
+    <script>
+      const API_BASE = "http://localhost:3001";
+      const PAGE_SIZE = 50;
+
+      const searchForm = document.getElementById("searchForm");
+      const queryInput = document.getElementById("query");
+      const countInput = document.getElementById("count");
+      const resultsEl = document.getElementById("results");
+      const statusEl = document.getElementById("status");
+      const downloadBtn = document.getElementById("downloadBtn");
+      const selectedCountEl = document.getElementById("selectedCount");
+      const prevPageBtn = document.getElementById("prevPageBtn");
+      const nextPageBtn = document.getElementById("nextPageBtn");
+      const pageInfoEl = document.getElementById("pageInfo");
+
+      let currentQuery = "";
+      let dragState = null;
+      let suppressClickOnce = false;
+      const selectedMap = new Map();
+      const pageCache = new Map();
+      const pageMeta = new Map();
+      const searchState = {
+        query: "",
+        requestedTotal: 0,
+        page: 1,
+        maxLoadedPage: 0,
+      };
+
+      function safeText(value) {
+        return String(value || "")
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;");
+      }
+
+      function updateSelectedCount() {
+        const count = selectedMap.size;
+        selectedCountEl.textContent = `선택 ${count}개`;
+        downloadBtn.disabled = count === 0;
+      }
+
+      function updatePager() {
+        const totalPages = Math.max(1, Math.ceil(searchState.requestedTotal / PAGE_SIZE));
+        const meta = pageMeta.get(searchState.page);
+        const hasNextFromApi = meta && Number.isFinite(meta.nextStart);
+
+        pageInfoEl.textContent = `페이지 ${searchState.page} / ${totalPages}`;
+        prevPageBtn.disabled = searchState.page <= 1;
+
+        const hasLoadedNext = pageCache.has(searchState.page + 1);
+        const withinRequested = searchState.page < totalPages;
+        nextPageBtn.disabled = !(withinRequested && (hasLoadedNext || hasNextFromApi));
+      }
+
+      function renderCurrentPage() {
+        const items = pageCache.get(searchState.page) || [];
+        if (!items.length) {
+          resultsEl.innerHTML = "";
+          updatePager();
+          return;
+        }
+
+        resultsEl.innerHTML = items
+          .map((item) => `
+            <article class="card">
+              <div class="thumb-wrap">
+                <img src="${item.thumbnailUrl}" alt="${safeText(item.title)}" loading="lazy" />
+                <input class="check" type="checkbox" value="${item.imageUrl}" data-mime="${item.mime}" ${selectedMap.has(item.imageUrl) ? "checked" : ""} />
+              </div>
+              <div class="meta">
+                <div class="title">${safeText(item.title)}</div>
+                <a class="source" href="${item.sourcePage}" target="_blank" rel="noopener noreferrer">출처 보기</a>
+              </div>
+            </article>
+          `)
+          .join("");
+
+        document.querySelectorAll(".check").forEach((check) => {
+          check.addEventListener("change", () => {
+            if (check.checked) selectedMap.set(check.value, check.dataset.mime || "image/jpeg");
+            else selectedMap.delete(check.value);
+            updateSelectedCount();
+          });
+        });
+
+        document.querySelectorAll(".card").forEach((card) => {
+          card.addEventListener("click", (event) => {
+            if (suppressClickOnce) {
+              suppressClickOnce = false;
+              return;
+            }
+            if (event.target.closest(".source")) return;
+            if (event.target.classList.contains("check")) return;
+            const check = card.querySelector(".check");
+            check.checked = !check.checked;
+            check.dispatchEvent(new Event("change"));
+          });
+        });
+
+        updatePager();
+        updateSelectedCount();
+      }
+
+      async function fetchPage(pageNumber) {
+        if (pageCache.has(pageNumber)) return pageCache.get(pageNumber);
+
+        const prevMeta = pageMeta.get(pageNumber - 1);
+        const start = pageNumber === 1 ? 0 : (prevMeta?.nextStart ?? (pageNumber - 1) * PAGE_SIZE);
+        const remaining = searchState.requestedTotal - (pageNumber - 1) * PAGE_SIZE;
+        const num = Math.max(1, Math.min(PAGE_SIZE, remaining));
+
+        const endpoint = new URL(`${API_BASE}/api/search`);
+        endpoint.searchParams.set("q", searchState.query);
+        endpoint.searchParams.set("num", String(num));
+        endpoint.searchParams.set("start", String(Math.max(0, start)));
+
+        const res = await fetch(endpoint.toString());
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data?.error || "검색 실패");
+        }
+
+        const items = (data.items || []).map((item) => ({
+          title: item.title || "image",
+          imageUrl: item.imageUrl,
+          thumbnailUrl: item.thumbnailUrl || item.imageUrl,
+          sourcePage: item.sourcePage || "",
+          mime: "image/jpeg",
+        }));
+
+        pageCache.set(pageNumber, items);
+        pageMeta.set(pageNumber, {
+          start: data.start,
+          nextStart: Number.isFinite(data.nextStart) ? data.nextStart : null,
+        });
+        searchState.maxLoadedPage = Math.max(searchState.maxLoadedPage, pageNumber);
+        return items;
+      }
+
+      function rectFromPoints(x1, y1, x2, y2) {
+        const left = Math.min(x1, x2);
+        const top = Math.min(y1, y2);
+        const width = Math.abs(x2 - x1);
+        const height = Math.abs(y2 - y1);
+        return { left, top, width, height, right: left + width, bottom: top + height };
+      }
+
+      function intersects(a, b) {
+        return !(a.right < b.left || a.left > b.right || a.bottom < b.top || a.top > b.bottom);
+      }
+
+      function clearDragHighlights() {
+        document.querySelectorAll(".card.drag-hit").forEach((card) => card.classList.remove("drag-hit"));
+      }
+
+      function onDragMove(event) {
+        if (!dragState) return;
+        const rect = rectFromPoints(dragState.startX, dragState.startY, event.clientX, event.clientY);
+        dragState.moved = rect.width > 6 || rect.height > 6;
+        dragState.box.style.left = `${rect.left}px`;
+        dragState.box.style.top = `${rect.top}px`;
+        dragState.box.style.width = `${rect.width}px`;
+        dragState.box.style.height = `${rect.height}px`;
+
+        document.querySelectorAll(".card").forEach((card) => {
+          const r = card.getBoundingClientRect();
+          const hit = intersects(rect, { left: r.left, top: r.top, right: r.right, bottom: r.bottom });
+          card.classList.toggle("drag-hit", hit);
+        });
+      }
+
+      function onDragEnd() {
+        if (!dragState) return;
+        if (dragState.moved) {
+          document.querySelectorAll(".card.drag-hit .check").forEach((check) => {
+            check.checked = true;
+            check.dispatchEvent(new Event("change"));
+          });
+          suppressClickOnce = true;
+        }
+        dragState.box.remove();
+        dragState = null;
+        clearDragHighlights();
+        document.removeEventListener("mousemove", onDragMove);
+        document.removeEventListener("mouseup", onDragEnd);
+      }
+
+      document.addEventListener("mousedown", (event) => {
+        if (event.button !== 0) return;
+        if (!resultsEl.children.length) return;
+        if (event.target.closest("input, button, textarea, label, a")) return;
+
+        dragState = {
+          startX: event.clientX,
+          startY: event.clientY,
+          moved: false,
+          box: document.createElement("div"),
+        };
+        dragState.box.className = "selection-box";
+        dragState.box.style.left = `${event.clientX}px`;
+        dragState.box.style.top = `${event.clientY}px`;
+        dragState.box.style.width = "0px";
+        dragState.box.style.height = "0px";
+        document.body.appendChild(dragState.box);
+
+        document.addEventListener("mousemove", onDragMove);
+        document.addEventListener("mouseup", onDragEnd);
+      });
+
+      searchForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const q = queryInput.value.trim();
+        if (!q) return;
+
+        const limit = Math.min(Math.max(parseInt(countInput.value, 10) || 100, 1), 500);
+        countInput.value = String(limit);
+        currentQuery = q;
+
+        searchState.query = q;
+        searchState.requestedTotal = limit;
+        searchState.page = 1;
+        searchState.maxLoadedPage = 0;
+
+        selectedMap.clear();
+        pageCache.clear();
+        pageMeta.clear();
+        resultsEl.innerHTML = "";
+        statusEl.textContent = "검색 중...";
+
+        try {
+          const first = await fetchPage(1);
+          if (!first.length) {
+            statusEl.textContent = "검색 결과가 없습니다.";
+            updatePager();
+            updateSelectedCount();
+            return;
+          }
+          statusEl.textContent = `총 ${limit}개 요청 (현재 1페이지 로드)`;
+          renderCurrentPage();
+        } catch (error) {
+          statusEl.textContent = `오류: ${error.message}`;
+          resultsEl.innerHTML = "";
+          updatePager();
+          updateSelectedCount();
+        }
+      });
+
+      prevPageBtn.addEventListener("click", () => {
+        if (searchState.page <= 1) return;
+        searchState.page -= 1;
+        renderCurrentPage();
+      });
+
+      nextPageBtn.addEventListener("click", async () => {
+        const nextPage = searchState.page + 1;
+        try {
+          if (!pageCache.has(nextPage)) {
+            statusEl.textContent = `${nextPage}페이지 로딩 중...`;
+            await fetchPage(nextPage);
+          }
+          searchState.page = nextPage;
+          renderCurrentPage();
+          statusEl.textContent = `페이지 ${searchState.page} 표시 중`;
+        } catch (error) {
+          statusEl.textContent = `오류: ${error.message}`;
+        }
+      });
+
+      function extFromMime(mime) {
+        if (!mime) return "jpg";
+        if (mime.includes("png")) return "png";
+        if (mime.includes("gif")) return "gif";
+        if (mime.includes("webp")) return "webp";
+        if (mime.includes("svg")) return "svg";
+        return "jpg";
+      }
+
+      downloadBtn.addEventListener("click", async () => {
+        const items = Array.from(selectedMap.entries()).map(([url, mime]) => ({ url, mime }));
+        if (!items.length) return;
+
+        statusEl.textContent = "ZIP 생성 중...";
+        downloadBtn.disabled = true;
+
+        try {
+          const zip = new JSZip();
+          let success = 0;
+
+          for (let i = 0; i < items.length; i += 1) {
+            try {
+              const res = await fetch(items[i].url);
+              if (!res.ok) continue;
+              const blob = await res.blob();
+              const ext = extFromMime(items[i].mime || blob.type);
+              zip.file(`image_${String(i + 1).padStart(3, "0")}.${ext}`, blob);
+              success += 1;
+            } catch (_) {}
+          }
+
+          if (!success) throw new Error("다운로드 가능한 이미지가 없습니다.");
+
+          const zipBlob = await zip.generateAsync({ type: "blob" });
+          const fileBase = (currentQuery || "images").replace(/[^\x20-\x7E]/g, "_").replace(/\s+/g, "_");
+          saveAs(zipBlob, `${fileBase || "images"}_${Date.now()}.zip`);
+          statusEl.textContent = `다운로드 완료 (${success}개)`;
+        } catch (error) {
+          statusEl.textContent = `오류: ${error.message}`;
+        } finally {
+          updateSelectedCount();
+        }
+      });
+
+      updatePager();
+      updateSelectedCount();
+    </script>
+  </body>
+</html>

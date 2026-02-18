@@ -1,0 +1,42 @@
+{
+  "name": "google-image-picker-downloader",
+  "version": "1.0.0",
+  "description": "Search Google images, select results, and download as ZIP.",
+  "main": "electron-main.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "desktop": "electron .",
+    "dist:mac": "electron-builder --mac --publish never"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "archiver": "^7.0.1",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.codex.imagepicker",
+    "productName": "Image Picker Downloader",
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.utilities"
+    },
+    "files": [
+      "electron-main.js",
+      "server.js",
+      "public/**/*",
+      ".env",
+      ".env.example"
+    ]
+  }
+}

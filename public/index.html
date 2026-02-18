@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>이미지 선택 다운로드</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>이미지 선택 다운로드</h1>
+      <p class="desc">검색 후 원하는 이미지를 선택해 ZIP으로 저장하세요. (기본: DuckDuckGo)</p>
+
+      <form id="searchForm" class="search-bar">
+        <input id="queryInput" type="text" placeholder="예: 고양이, 여행 풍경" required />
+        <input id="countInput" type="number" min="1" max="50" value="20" />
+        <button type="submit">검색</button>
+      </form>
+
+      <div class="actions">
+        <button id="downloadBtn" disabled>선택 이미지 ZIP 다운로드</button>
+        <span id="selectedCount">선택 0개</span>
+      </div>
+
+      <div id="status" class="status"></div>
+      <section id="results" class="grid"></section>
+    </main>
+
+    <script src="/script.js"></script>
+  </body>
+</html>
