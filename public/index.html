@@ -13,7 +13,7 @@
 
       <form id="searchForm" class="search-bar">
         <input id="queryInput" type="text" placeholder="예: 고양이, 여행 풍경" required />
-        <input id="countInput" type="number" min="1" max="50" value="20" />
+        <input id="countInput" type="number" min="1" max="500" value="100" />
         <button type="submit">검색</button>
       </form>
 
@@ -23,6 +23,11 @@
       </div>
 
       <div id="status" class="status"></div>
+      <div class="pager">
+        <button id="prevPageBtn" type="button" disabled>이전</button>
+        <button id="nextPageBtn" type="button" disabled>다음</button>
+        <span id="pageInfo">페이지 0 / 0</span>
+      </div>
       <section id="results" class="grid"></section>
     </main>
 

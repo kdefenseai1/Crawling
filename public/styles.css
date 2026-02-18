@@ -80,6 +80,23 @@ button:disabled {
   color: var(--muted);
 }
 
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.pager button {
+  height: 34px;
+  padding: 0 12px;
+}
+
+.pager span {
+  color: var(--muted);
+  font-size: 14px;
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
