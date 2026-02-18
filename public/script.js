@@ -22,6 +22,7 @@ const state = {
   maxPage: 1,
   pageMap: new Map(),
   nextStartMap: new Map(),
+  fallbackMap: new Map(),
 };
 
 function escapeHtml(value) {
@@ -64,6 +65,18 @@ function updatePager() {
   const withinLimit = state.currentPage < totalPages;
 
   nextPageBtn.disabled = !(withinLimit && (cachedNext || hasNextStart));
+}
+
+function buildPageStatus(pageNumber, loadedCount) {
+  const fallback = state.fallbackMap.get(pageNumber);
+  const base = String(pageNumber) + '페이지 표시 중 (' + String(loadedCount) + '개)';
+  if (fallback === 'bing_images') {
+    return base + ' - DuckDuckGo 보호 응답으로 대체 소스 사용';
+  }
+  if (fallback === 'ddg_protection') {
+    return base + ' - DuckDuckGo 보호 페이지 감지';
+  }
+  return base;
 }
 
 function renderItems(items) {
@@ -213,6 +226,7 @@ async function fetchPage(pageNumber) {
   const items = data.items || [];
   state.pageMap.set(pageNumber, items);
   state.nextStartMap.set(pageNumber, Number.isFinite(data.nextStart) ? data.nextStart : null);
+  state.fallbackMap.set(pageNumber, typeof data.fallback === 'string' ? data.fallback : null);
   return items;
 }
 
@@ -230,6 +244,7 @@ searchForm.addEventListener("submit", async (e) => {
   state.maxPage = Math.max(1, Math.ceil(requestedNum / PAGE_SIZE));
   state.pageMap.clear();
   state.nextStartMap.clear();
+  state.fallbackMap.clear();
   selectedSet.clear();
 
   statusEl.textContent = "검색 중...";
@@ -238,7 +253,7 @@ searchForm.addEventListener("submit", async (e) => {
 
   try {
     const items = await fetchPage(1);
-    statusEl.textContent = `총 ${requestedNum}개 요청 / 현재 ${items.length}개 로드`;
+    statusEl.textContent = '총 ' + String(requestedNum) + '개 요청 / ' + buildPageStatus(1, items.length);
     renderItems(items);
   } catch (err) {
     statusEl.textContent = `오류: ${err.message}`;
@@ -252,7 +267,7 @@ prevPageBtn.addEventListener("click", async () => {
   if (state.currentPage <= 1) return;
   state.currentPage -= 1;
   const items = state.pageMap.get(state.currentPage) || [];
-  statusEl.textContent = `${state.currentPage}페이지 표시 중`;
+  statusEl.textContent = buildPageStatus(state.currentPage, items.length);
   renderItems(items);
 });
 
@@ -271,7 +286,7 @@ nextPageBtn.addEventListener("click", async () => {
     }
 
     state.currentPage = targetPage;
-    statusEl.textContent = `${state.currentPage}페이지 표시 중`;
+    statusEl.textContent = buildPageStatus(state.currentPage, items.length);
     renderItems(items);
   } catch (err) {
     statusEl.textContent = `오류: ${err.message}`;

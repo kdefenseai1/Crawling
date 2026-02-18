@@ -47,13 +47,82 @@ function extractDuckDuckGoVqd(html) {
   return null;
 }
 
+function decodeHtmlEntities(text) {
+  return text
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, "&")
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
+
+function isLikelyBotChallenge(html) {
+  if (!html) return false;
+  const markers = [
+    'detected unusual traffic',
+    'anomaly',
+    'verify you are human',
+    'captcha',
+    'automated requests',
+  ];
+  const lower = html.toLowerCase();
+  return markers.some((m) => lower.includes(m));
+}
+
+async function searchDuckDuckGoImageFallbackViaBing(query, num, start = 0) {
+  const first = Math.max(1, start + 1);
+  const endpoint = new URL('https://www.bing.com/images/search');
+  endpoint.searchParams.set('q', query);
+  endpoint.searchParams.set('form', 'HDRSC2');
+  endpoint.searchParams.set('first', String(first));
+
+  const response = await fetch(endpoint, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0',
+      'Accept-Language': 'en-US,en;q=0.9,ko;q=0.8',
+      Referer: 'https://duckduckgo.com/',
+    },
+  });
+  if (!response.ok) {
+    throw new Error('DuckDuckGo fallback 검색 실패: ' + response.status);
+  }
+
+  const html = await response.text();
+  const regex = /class=["']iusc["'][^>]*\sm=(?:"([^"]+)"|'([^']+)')/g;
+  const items = [];
+  const seen = new Set();
+  let match;
+
+  while ((match = regex.exec(html)) && items.length < num) {
+    try {
+      const raw = decodeHtmlEntities(match[1] || match[2] || '');
+      const meta = JSON.parse(raw);
+      const imageUrl = meta?.murl || meta?.imgurl;
+      if (!imageUrl || seen.has(imageUrl)) continue;
+      seen.add(imageUrl);
+      items.push({
+        id: items.length + 1,
+        title: meta.t || meta.title || 'image',
+        imageUrl,
+        thumbnailUrl: meta.turl || imageUrl,
+        sourcePage: meta.purl || '',
+      });
+    } catch (_) {
+      // skip broken rows
+    }
+  }
+
+  const nextStart = items.length ? start + num : null;
+  return { items, nextStart, fallback: 'bing_images' };
+}
+
 async function searchDuckDuckGoImages(query, num, start = 0) {
   const baseHeaders = {
-    "User-Agent": "Mozilla/5.0",
+    'User-Agent': 'Mozilla/5.0',
     Accept:
-      "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9,ko;q=0.8",
-    Referer: "https://duckduckgo.com/",
+      'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9,ko;q=0.8',
+    Referer: 'https://duckduckgo.com/',
   };
 
   const bootstrapUrls = [
@@ -63,65 +132,82 @@ async function searchDuckDuckGoImages(query, num, start = 0) {
   ];
 
   let vqd = null;
-  let lastStatus = null;
+  let challengeDetected = false;
   for (const url of bootstrapUrls) {
     try {
       const initRes = await fetch(url, { headers: baseHeaders });
-      lastStatus = initRes.status;
       if (!initRes.ok) continue;
       const initHtml = await initRes.text();
+      if (isLikelyBotChallenge(initHtml)) challengeDetected = true;
       vqd = extractDuckDuckGoVqd(initHtml);
       if (vqd) break;
     } catch (_) {
-      // 다음 시도
+      // try next bootstrap URL
     }
   }
 
   if (!vqd) {
-    throw new Error(
-      `DuckDuckGo 토큰(vqd)을 찾지 못했습니다.${lastStatus ? ` (status ${lastStatus})` : ""}`
-    );
+    return searchDuckDuckGoImageFallbackViaBing(query, num, start);
   }
 
-  const apiUrl = new URL("https://duckduckgo.com/i.js");
-  apiUrl.searchParams.set("l", "us-en");
-  apiUrl.searchParams.set("o", "json");
-  apiUrl.searchParams.set("q", query);
-  apiUrl.searchParams.set("vqd", vqd);
-  apiUrl.searchParams.set("f", ",,,");
-  apiUrl.searchParams.set("p", "1");
-  apiUrl.searchParams.set("s", String(Math.max(0, start)));
+  const apiUrl = new URL('https://duckduckgo.com/i.js');
+  apiUrl.searchParams.set('l', 'us-en');
+  apiUrl.searchParams.set('o', 'json');
+  apiUrl.searchParams.set('q', query);
+  apiUrl.searchParams.set('vqd', vqd);
+  apiUrl.searchParams.set('f', ',,,');
+  apiUrl.searchParams.set('p', '1');
+  apiUrl.searchParams.set('s', String(Math.max(0, start)));
 
-  const searchRes = await fetch(apiUrl, {
-    headers: {
-      ...baseHeaders,
-      Referer: "https://duckduckgo.com/",
-      Accept: "application/json",
-    },
-  });
+  try {
+    const searchRes = await fetch(apiUrl, {
+      headers: {
+        ...baseHeaders,
+        Referer: 'https://duckduckgo.com/',
+        Accept: 'application/json',
+      },
+    });
 
-  if (!searchRes.ok) {
-    throw new Error(`DuckDuckGo 검색 실패: ${searchRes.status}`);
-  }
+    if (!searchRes.ok) {
+      return searchDuckDuckGoImageFallbackViaBing(query, num, start);
+    }
 
-  const data = await searchRes.json();
-  const items = (data.results || []).slice(0, num).map((item, index) => ({
-    id: index + 1,
-    title: item.title || "image",
-    imageUrl: item.image,
-    thumbnailUrl: item.thumbnail || item.image,
-    sourcePage: item.url || "",
-  }));
-  let nextStart = null;
-  if (typeof data.next === "string") {
+    let data;
     try {
-      const nextUrl = new URL(data.next, "https://duckduckgo.com");
-      const s = parseInt(nextUrl.searchParams.get("s"), 10);
-      if (Number.isFinite(s)) nextStart = s;
-    } catch (_) {}
-  }
+      data = await searchRes.json();
+    } catch (_) {
+      return searchDuckDuckGoImageFallbackViaBing(query, num, start);
+    }
 
-  return { items, nextStart };
+    const items = (data.results || []).slice(0, num).map((item, index) => ({
+      id: index + 1,
+      title: item.title || 'image',
+      imageUrl: item.image,
+      thumbnailUrl: item.thumbnail || item.image,
+      sourcePage: item.url || '',
+    }));
+
+    if (!items.length) {
+      return searchDuckDuckGoImageFallbackViaBing(query, num, start);
+    }
+
+    let nextStart = null;
+    if (typeof data.next === 'string') {
+      try {
+        const nextUrl = new URL(data.next, 'https://duckduckgo.com');
+        const s = parseInt(nextUrl.searchParams.get('s'), 10);
+        if (Number.isFinite(s)) nextStart = s;
+      } catch (_) {}
+    }
+
+    if (!Number.isFinite(nextStart)) {
+      nextStart = start + num;
+    }
+
+    return { items, nextStart, fallback: challengeDetected ? 'ddg_protection' : null };
+  } catch (_) {
+    return searchDuckDuckGoImageFallbackViaBing(query, num, start);
+  }
 }
 
 function sanitizeFilename(name) {
@@ -173,6 +259,7 @@ app.get(["/api/search", "/search"], async (req, res) => {
       const items = result.items;
       return res.json({
         provider: "duckduckgo",
+        fallback: result.fallback,
         query: q,
         start,
         nextStart: result.nextStart,
