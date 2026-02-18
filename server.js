@@ -34,21 +34,53 @@ function ensureGoogleConfig(res) {
   return true;
 }
 
+function extractDuckDuckGoVqd(html) {
+  const patterns = [
+    /vqd\s*=\s*["']([^"']+)["']/i,
+    /["']vqd["']\s*:\s*["']([^"']+)["']/i,
+    /vqd=([0-9-]{8,})/i,
+  ];
+  for (const pattern of patterns) {
+    const match = html.match(pattern);
+    if (match?.[1]) return match[1];
+  }
+  return null;
+}
+
 async function searchDuckDuckGoImages(query, num, start = 0) {
-  const baseHeaders = { "User-Agent": "Mozilla/5.0" };
-  const initRes = await fetch(
-    `https://duckduckgo.com/?q=${encodeURIComponent(query)}&iax=images&ia=images`,
-    { headers: baseHeaders }
-  );
-  if (!initRes.ok) {
-    throw new Error(`DuckDuckGo 초기 요청 실패: ${initRes.status}`);
+  const baseHeaders = {
+    "User-Agent": "Mozilla/5.0",
+    Accept:
+      "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9,ko;q=0.8",
+    Referer: "https://duckduckgo.com/",
+  };
+
+  const bootstrapUrls = [
+    `https://duckduckgo.com/?q=${encodeURIComponent(query)}&ia=images&iax=images`,
+    `https://duckduckgo.com/?q=${encodeURIComponent(query)}&ia=images`,
+    `https://duckduckgo.com/?q=${encodeURIComponent(query)}`,
+  ];
+
+  let vqd = null;
+  let lastStatus = null;
+  for (const url of bootstrapUrls) {
+    try {
+      const initRes = await fetch(url, { headers: baseHeaders });
+      lastStatus = initRes.status;
+      if (!initRes.ok) continue;
+      const initHtml = await initRes.text();
+      vqd = extractDuckDuckGoVqd(initHtml);
+      if (vqd) break;
+    } catch (_) {
+      // 다음 시도
+    }
   }
 
-  const initHtml = await initRes.text();
-  const vqdMatch = initHtml.match(/vqd=['"]([^'"]+)['"]/);
-  const vqd = vqdMatch?.[1];
   if (!vqd) {
-    throw new Error("DuckDuckGo 토큰(vqd)을 찾지 못했습니다.");
+    throw new Error(
+      `DuckDuckGo 토큰(vqd)을 찾지 못했습니다.${lastStatus ? ` (status ${lastStatus})` : ""}`
+    );
   }
 
   const apiUrl = new URL("https://duckduckgo.com/i.js");
