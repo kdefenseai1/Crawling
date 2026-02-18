@@ -19,6 +19,9 @@ app.use((_, res, next) => {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   next();
 });
+app.options("*", (req, res) => {
+  res.status(204).end();
+});
 
 function ensureGoogleConfig(res) {
   if (!GOOGLE_API_KEY || !GOOGLE_CSE_ID) {
@@ -123,7 +126,7 @@ function guessExt(url, contentType) {
   return "jpg";
 }
 
-app.get("/api/search", async (req, res) => {
+app.get(["/api/search", "/search"], async (req, res) => {
   const q = (req.query.q || "").trim();
   const num = Math.min(Math.max(parseInt(req.query.num, 10) || 20, 1), 50);
   const start = Math.max(0, parseInt(req.query.start, 10) || 0);
@@ -183,7 +186,7 @@ app.get("/api/search", async (req, res) => {
   }
 });
 
-app.post("/api/download", async (req, res) => {
+app.post(["/api/download", "/download"], async (req, res) => {
   const images = Array.isArray(req.body.images) ? req.body.images : [];
   const query = (req.body.query || "images").toString();
 
